@@ -5,6 +5,7 @@ import time
 
 from utils.helpers import read_file_chunk
 from constants import TEXT_CONTENT_EXTENSIONS
+from services.index_manager import PersistentIndex
 
 SKIP_DIRS = frozenset({
     "node_modules", ".git", ".svn", "__pycache__", "venv", ".venv",
@@ -16,9 +17,45 @@ SKIP_DIRS = frozenset({
 class FileSearcher:
     def __init__(self):
         self._file_cache: dict[str, list[tuple[str, str, str, str]]] = {}
+        self._index = PersistentIndex()
 
     def invalidate_cache(self) -> None:
         self._file_cache.clear()
+
+    def ensure_index(self, config: dict) -> bool:
+        if self._index.load_index():
+            return True
+        paths = self._get_search_paths(config)
+        if not paths:
+            return False
+        self._index.build_index(paths)
+        return True
+
+    def rebuild_index(self, config: dict) -> None:
+        paths = self._get_search_paths(config)
+        if paths:
+            self._index.build_index(paths)
+
+    def incremental_update(self, config: dict) -> int:
+        paths = self._get_search_paths(config)
+        if not paths:
+            return 0
+        return self._index.incremental_update(paths)
+
+    def get_index_stats(self) -> dict:
+        return self._index.get_stats()
+
+    def _get_search_paths(self, config: dict) -> list[str]:
+        from config import get_valid_scopes
+        scopes = get_valid_scopes(config)
+        if not scopes:
+            return []
+        paths = []
+        for scope in scopes:
+            for p in scope.get("paths", []):
+                if p and os.path.exists(p):
+                    paths.append(p)
+        return paths
 
     def _extract_keywords(self, question: str) -> tuple[list[str], list[str]]:
         phrases = re.findall(r'"([^"]+)"', question)
@@ -44,6 +81,20 @@ class FileSearcher:
         if not paths:
             return ""
 
+        # 优先使用持久化索引
+        if self._index.load_index():
+            words, phrases = self._extract_keywords(question)
+            search_terms = words + [p.lower() for p in phrases]
+            query = " ".join(search_terms)
+            index_results = self._index.search(query, max_results=5)
+            if index_results:
+                result_parts = []
+                for r in index_results:
+                    snippet = r.get("content_preview", "")[:800]
+                    result_parts.append(f"【知识库 - {r['filename']}】{snippet}")
+                return "\n\n---\n\n".join(result_parts)
+
+        # 索引不可用时回退到原始遍历
         words, phrases = self._extract_keywords(question)
         if not words and not phrases:
             return ""
@@ -119,3 +170,9 @@ class FileSearcher:
         for score, fname, snippet, rel_path in scored_list[:5]:
             result_parts.append(f"【知识库 - {fname}】{snippet}")
         return "\n\n---\n\n".join(result_parts)
+
+    def search_files_with_index(self, query: str, config: dict,
+                                  max_results: int = 50) -> list[dict]:
+        if self._index.load_index():
+            return self._index.search(query, max_results)
+        return []

@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import tkinter as tk
+from datetime import datetime
 from tkinter import ttk
 
 from constants import COLORS, SUGGESTIONS, N_KB
@@ -27,10 +28,13 @@ class SearchPanel:
         self._search_generation: int = 0
         self._cache_valid: bool = False
         self._file_cache: dict[str, list[tuple[str, str]]] = {}
+        self._is_building_index: bool = False
 
         self.search_var = tk.StringVar()
         self.content_search_var = tk.BooleanVar(value=False)
         self.scope_var = tk.StringVar(value=SCOPE_OPTIONS[0])
+        self.filter_type_var = tk.StringVar(value="全部类型")
+        self.filter_date_var = tk.StringVar(value="全部时间")
 
         self.search_entry: tk.Entry | None = None
         self.search_btn: tk.Button | None = None
@@ -38,12 +42,16 @@ class SearchPanel:
         self.result_count: tk.Label | None = None
         self.scope_label: tk.Label | None = None
         self.detail_label: tk.Label | None = None
-        self.suggestion_text: tk.Label | None = None
+        self.preview_text: tk.Text | None = None
         self.open_btn: tk.Button | None = None
 
         self._frame = tk.Frame(parent, bg=COLORS["bg"])
         self._build_search_bar()
         self._build_content_area()
+        self._build_index_bar()
+
+        # 启动后尝试加载持久化索引
+        self._parent.after(500, self._ensure_index)
 
     @property
     def frame(self) -> tk.Frame:
@@ -135,6 +143,7 @@ class SearchPanel:
         lc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 15))
 
         self._build_result_header(lc)
+        self._build_filter_bar(lc)
         self._build_result_list(lc)
         self._build_detail_bar(lc)
 
@@ -164,6 +173,46 @@ class SearchPanel:
         self.result_count.pack(side=tk.RIGHT)
 
         tk.Frame(parent, bg=COLORS["border"], height=1).pack(fill=tk.X, padx=20)
+
+        self._search_history: list[str] = []
+        self._load_search_history()
+
+    def _build_filter_bar(self, parent: tk.Frame) -> None:
+        fb = tk.Frame(parent, bg="white")
+        fb.pack(fill=tk.X, padx=20, pady=(8, 4))
+
+        FILTER_TYPES = ["全部类型", "Word", "PDF", "Excel", "PPT"]
+        type_cb = ttk.Combobox(
+            fb, textvariable=self.filter_type_var,
+            state="readonly", values=FILTER_TYPES, width=10,
+            font=("Microsoft YaHei UI", 9),
+        )
+        type_cb.pack(side=tk.LEFT, padx=(0, 8))
+
+        FILTER_DATES = ["全部时间", "今天", "本周", "本月"]
+        date_cb = ttk.Combobox(
+            fb, textvariable=self.filter_date_var,
+            state="readonly", values=FILTER_DATES, width=10,
+            font=("Microsoft YaHei UI", 9),
+        )
+        date_cb.pack(side=tk.LEFT, padx=(0, 8))
+
+        tk.Label(
+            fb, text="\U0001F50D",
+            font=("Segoe UI Emoji", 10), bg="white",
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        self._history_cb = ttk.Combobox(
+            fb, state="readonly", width=18,
+            font=("Microsoft YaHei UI", 9),
+        )
+        self._history_cb.pack(side=tk.RIGHT)
+        self._history_cb.bind("<<ComboboxSelected>>", self._on_history_select)
+
+        tk.Label(
+            fb, text="历史:",
+            font=("Microsoft YaHei UI", 9), fg="#94A3B8", bg="white",
+        ).pack(side=tk.RIGHT, padx=(0, 4))
 
     def _build_result_list(self, parent: tk.Frame) -> None:
         lc2 = tk.Frame(parent, bg="white")
@@ -206,27 +255,42 @@ class SearchPanel:
         self.detail_label.pack(fill=tk.X, padx=10, pady=8)
 
     def _build_right_panel(self, parent: tk.Frame) -> None:
-        from datetime import datetime
-
         rc = tk.Frame(parent, bg="white", width=300)
         rc.pack(side=tk.RIGHT, fill=tk.BOTH)
         rc.pack_propagate(False)
 
         tk.Frame(rc, bg=COLORS["secondary"], height=50).pack(fill=tk.X)
         tk.Label(
-            rc, text="\U0001F4A1 智能建议",
+            rc, text="\U0001F4A1 预览",
             font=("Microsoft YaHei UI", 13, "bold"),
             fg="white", bg=COLORS["secondary"],
         ).place(x=20, y=12)
 
-        self.suggestion_text = tk.Label(
-            rc,
-            text="\U0001F4A1 输入关键词开始搜索\n\n支持搜索所有文件类型：\n• Word/Excel 文档\n• PDF 文件\n• 图片文件",
-            font=("Microsoft YaHei UI", 11),
-            fg=COLORS["text_light"], bg="white",
-            wraplength=250, justify="left", anchor="nw",
+        preview_container = tk.Frame(rc, bg="white")
+        preview_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+
+        preview_sb = tk.Scrollbar(preview_container)
+        preview_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.preview_text = tk.Text(
+            preview_container,
+            font=("Microsoft YaHei UI", 10),
+            bg="white", fg=COLORS["text"],
+            bd=0, relief="flat", wrap="word",
+            state="disabled",
+            yscrollcommand=preview_sb.set,
         )
-        self.suggestion_text.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+        self.preview_text.pack(fill=tk.BOTH, expand=True)
+        preview_sb.config(command=self.preview_text.yview)
+
+        self.preview_text.tag_configure("highlight",
+            background="#BFDBFE", foreground="#1E293B")
+        self.preview_text.tag_configure("title",
+            font=("Microsoft YaHei UI", 10, "bold"), foreground=COLORS["text"])
+        self.preview_text.tag_configure("dim",
+            foreground="#94A3B8")
+
+        self._show_default_preview()
 
         bf = tk.Frame(rc, bg="white", pady=15)
         bf.pack(fill=tk.X, side=tk.BOTTOM, padx=20)
@@ -249,6 +313,187 @@ class SearchPanel:
             pady=12,
             command=self._open_folder_callback,
         ).pack(fill=tk.X)
+
+    # ── Index Management ────────────────────────────────
+
+    def _build_index_bar(self) -> None:
+        bar = tk.Frame(self._frame, bg="#F1F5F9", height=36)
+        bar.pack(side=tk.BOTTOM, fill=tk.X)
+        bar.pack_propagate(False)
+
+        inner = tk.Frame(bar, bg="#F1F5F9")
+        inner.pack(fill=tk.X, padx=20, pady=4)
+
+        self._index_status = tk.Label(
+            inner, text="\u23F3 索引加载中...",
+            font=("Microsoft YaHei UI", 9),
+            fg="#64748B", bg="#F1F5F9",
+        )
+        self._index_status.pack(side=tk.LEFT)
+
+        self._rebuild_btn = tk.Button(
+            inner, text="\u21BB 重建索引",
+            font=("Microsoft YaHei UI", 9),
+            bg="#E2E8F0", fg="#475569",
+            bd=0, relief="flat", cursor="hand2",
+            padx=10, pady=2,
+            activebackground="#CBD5E1",
+            command=self._on_rebuild_index,
+        )
+        self._rebuild_btn.pack(side=tk.RIGHT)
+
+        self._index_progress = ttk.Progressbar(
+            inner, mode="indeterminate", length=120
+        )
+
+    def _ensure_index(self) -> None:
+        try:
+            from config import load_config
+            config = load_config()
+            ok = self._searcher.ensure_index(config)
+            self._update_index_stats()
+            if ok:
+                self._index_status.config(
+                    text="\u2705 " + self._format_index_status(),
+                    fg="#16A34A",
+                )
+        except Exception as e:
+            self._index_status.config(text="\u274C 索引加载失败", fg="#EF4444")
+
+    def _format_index_status(self) -> str:
+        stats = self._searcher.get_index_stats()
+        parts = []
+        if stats.get("file_count", 0) > 0:
+            parts.append(f"{stats['file_count']} 文件")
+        if stats.get("build_time"):
+            parts.append(stats["build_time"])
+        return " | ".join(parts) if parts else "无索引"
+
+    def _on_rebuild_index(self) -> None:
+        if self._is_building_index:
+            return
+        self._is_building_index = True
+        self._rebuild_btn.config(state="disabled", text="\u23F3 重建中...")
+        self._index_progress.pack(side=tk.RIGHT, padx=(8, 0))
+        self._index_progress.start(10)
+        self._index_status.config(text="\u23F3 正在重建索引...", fg="#F59E0B")
+        threading.Thread(target=self._rebuild_index_thread, daemon=True).start()
+
+    def _rebuild_index_thread(self) -> None:
+        try:
+            from config import load_config
+            config = load_config()
+            self._searcher.rebuild_index(config)
+            self._parent.after(0, self._on_rebuild_done)
+        except Exception as e:
+            self._parent.after(0, lambda: self._on_rebuild_error(str(e)))
+
+    def _on_rebuild_done(self) -> None:
+        self._is_building_index = False
+        self._index_progress.stop()
+        self._index_progress.pack_forget()
+        self._rebuild_btn.config(state="normal", text="\u21BB 重建索引")
+        stats = self._searcher.get_index_stats()
+        self._index_status.config(
+            text=f"\u2705 索引已重建: {stats.get('file_count', 0)} 文件",
+            fg="#16A34A",
+        )
+
+    def _on_rebuild_error(self, error: str) -> None:
+        self._is_building_index = False
+        self._index_progress.stop()
+        self._index_progress.pack_forget()
+        self._rebuild_btn.config(state="normal", text="\u21BB 重建索引")
+        self._index_status.config(text=f"\u274C 索引重建失败: {error}", fg="#EF4444")
+
+    def _update_index_stats(self) -> None:
+        try:
+            stats = self._searcher.get_index_stats()
+            if stats.get("file_count", 0) > 0:
+                self._index_status.config(
+                    text="\u2705 " + self._format_index_status(),
+                    fg="#16A34A",
+                )
+        except Exception:
+            pass
+
+    # ── Search History ──────────────────────────────────
+
+    def _load_search_history(self) -> None:
+        path = os.path.join(self._searcher._index._index_dir, "search_history.json")
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    import json
+                    data = json.load(f)
+                    self._search_history = data.get("history", [])
+        except Exception:
+            self._search_history = []
+        self._update_history_combobox()
+
+    def _save_search_history(self) -> None:
+        path = os.path.join(self._searcher._index._index_dir, "search_history.json")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                import json
+                json.dump({"history": self._search_history[:20]}, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _add_search_history(self, keyword: str) -> None:
+        if not keyword or keyword in ("输入关键词搜索文件...",):
+            return
+        if keyword in self._search_history:
+            self._search_history.remove(keyword)
+        self._search_history.insert(0, keyword)
+        self._search_history = self._search_history[:20]
+        self._update_history_combobox()
+        self._save_search_history()
+
+    def _update_history_combobox(self) -> None:
+        if hasattr(self, "_history_cb"):
+            self._history_cb["values"] = self._search_history[:10]
+
+    def _on_history_select(self, event: tk.Event) -> None:
+        if hasattr(self, "_history_cb"):
+            sel = self._history_cb.get()
+            if sel:
+                self.search_var.set(sel)
+                self.search_files()
+
+    # ── File Filters ────────────────────────────────────
+
+    def _get_filter_exts(self) -> set[str] | None:
+        ft = self.filter_type_var.get()
+        if ft == "Word":
+            return {".docx", ".doc"}
+        if ft == "PDF":
+            return {".pdf"}
+        if ft == "Excel":
+            return {".xlsx", ".xls"}
+        if ft == "PPT":
+            return {".pptx", ".ppt"}
+        return None
+
+    def _is_within_date_range(self, mtime: float) -> bool:
+        dr = self.filter_date_var.get()
+        if dr == "全部时间":
+            return True
+        now = datetime.now()
+        if dr == "今天":
+            start = datetime(now.year, now.month, now.day).timestamp()
+            return mtime >= start
+        if dr == "本周":
+            monday = now - __import__("datetime").timedelta(days=now.weekday())
+            start = datetime(monday.year, monday.month, monday.day).timestamp()
+            return mtime >= start
+        if dr == "本月":
+            start = datetime(now.year, now.month, 1).timestamp()
+            return mtime >= start
+        return True
+
+    # ── Search Panel Events ─────────────────────────────
 
     def _on_search_focus(self, event: tk.Event) -> None:
         if self.search_entry and self.search_entry.get() == "输入关键词搜索文件...":
@@ -275,6 +520,8 @@ class SearchPanel:
         keyword = self.search_var.get().strip()
         if keyword in ("输入关键词搜索文件...", "") or keyword == "":
             return
+
+        self._add_search_history(keyword)
 
         self._search_cancelled = True
         if self.result_listbox:
@@ -347,6 +594,23 @@ class SearchPanel:
         except Exception as e:
             logging.error(f"搜索异常: 获取content_search_var失败 {e}")
 
+        filter_exts = self._get_filter_exts()
+        filter_date = self.filter_date_var.get() != "全部时间"
+
+        def _passes_filters(filepath: str, filename: str) -> bool:
+            if filter_exts is not None:
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in filter_exts:
+                    return False
+            if filter_date:
+                try:
+                    mtime = os.path.getmtime(filepath)
+                    if not self._is_within_date_range(mtime):
+                        return False
+                except OSError:
+                    pass
+            return True
+
         def _is_stale() -> bool:
             return self._search_cancelled or generation != self._search_generation
 
@@ -370,9 +634,11 @@ class SearchPanel:
                     for filepath, filename in self._file_cache[cache_key]:
                         if _is_stale():
                             break
-                        is_match = keyword_lower in filename.lower()
+                        is_match = (keyword_lower in filename.lower()
+                                    and _passes_filters(filepath, filename))
                         if not is_match and search_content:
-                            is_match = self._match_content(filepath, keyword_lower)
+                            is_match = (self._match_content(filepath, keyword_lower)
+                                        and _passes_filters(filepath, filename))
                         if is_match:
                             icon = get_file_icon(filename)
                             results.append({"filepath": filepath, "filename": filename,
@@ -396,9 +662,11 @@ class SearchPanel:
                                     break
                                 filepath = os.path.join(root, filename)
                                 file_list.append((filepath, filename))
-                                is_match = keyword_lower in filename.lower()
+                                is_match = (keyword_lower in filename.lower()
+                                            and _passes_filters(filepath, filename))
                                 if not is_match and search_content:
-                                    is_match = self._match_content(filepath, keyword_lower)
+                                    is_match = (self._match_content(filepath, keyword_lower)
+                                                and _passes_filters(filepath, filename))
                                 if is_match:
                                     icon = get_file_icon(filename)
                                     results.append({"filepath": filepath, "filename": filename,
@@ -460,14 +728,10 @@ class SearchPanel:
         if count > 0 and self.open_btn:
             self.open_btn.config(state="normal", bg=COLORS["primary"])
             if not incremental:
-                self._update_suggestions(keyword)
+                self._show_suggestions_in_preview(keyword)
         elif not incremental and self.open_btn:
             self.open_btn.config(state="disabled", bg=COLORS["border"])
-            if self.suggestion_text:
-                self.suggestion_text.config(
-                    text="\u274C 未找到匹配文件\n\n\U0001F4A1 建议：\n• 检查关键词拼写\n• 尝试更简短的关键词",
-                    fg="#EF4444",
-                )
+            self._show_preview_text("\u274C 未找到匹配文件\n\n\U0001F4A1 建议：\n• 检查关键词拼写\n• 尝试更简短的关键词")
 
     def _update_suggestions(self, keyword: str) -> None:
         suggestions: list[str] = []
@@ -477,11 +741,111 @@ class SearchPanel:
         if not suggestions:
             suggestions = SUGGESTIONS["default"]
         suggestions = list(dict.fromkeys(suggestions))[:6]
-        if self.suggestion_text:
-            self.suggestion_text.config(
-                text=f"\U0001F4CC 基于「{keyword}」的建议：\n\n" + "\n".join(suggestions),
-                fg=COLORS["text"],
-            )
+        self._show_suggestions_in_preview(keyword)
+
+    # ── Preview Management ──────────────────────────────
+
+    def _show_default_preview(self) -> None:
+        self._show_preview_text(
+            "\U0001F4A1 输入关键词开始搜索\n\n"
+            "支持搜索所有文件类型：\n"
+            "• Word/Excel 文档\n"
+            "• PDF 文件\n"
+            "• 图片文件"
+        )
+
+    def _show_suggestions_in_preview(self, keyword: str) -> None:
+        suggestions: list[str] = []
+        for key, values in SUGGESTIONS.items():
+            if key.lower() in keyword.lower():
+                suggestions.extend(values)
+        if not suggestions:
+            suggestions = SUGGESTIONS["default"]
+        suggestions = list(dict.fromkeys(suggestions))[:6]
+        self._show_preview_text(
+            f"\U0001F4CC 基于「{keyword}」的建议：\n\n" + "\n".join(suggestions)
+        )
+
+    def _show_file_preview(self, filepath: str, keyword: str) -> None:
+        if not self.preview_text:
+            return
+        try:
+            preview = self._get_file_preview(filepath, keyword)
+            self._show_preview_with_highlight(preview, keyword)
+        except Exception:
+            self._show_preview_text(f"\u274C 无法预览: {os.path.basename(filepath)}")
+
+    def _get_file_preview(self, filepath: str, keyword: str, max_chars: int = 1500) -> str:
+        from utils.helpers import read_file_chunk, is_text_file, format_file_size
+        try:
+            fsize = os.path.getsize(filepath)
+            fname = os.path.basename(filepath)
+            mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
+
+            if is_text_file(filepath):
+                content = read_file_chunk(filepath, max_chars)
+                if content and keyword:
+                    idx = content.lower().find(keyword.lower())
+                    if idx != -1:
+                        start = max(0, idx - 300)
+                        end = min(len(content), idx + len(keyword) + 300)
+                        prefix = "..." if start > 0 else ""
+                        suffix = "..." if end < len(content) else ""
+                        excerpt = f"{prefix}{content[start:end]}{suffix}"
+                    else:
+                        excerpt = content[:600]
+                elif content:
+                    excerpt = content[:600]
+                else:
+                    excerpt = "(无法读取内容)"
+            else:
+                excerpt = "(二进制文件，无法预览内容)"
+
+            lines = [
+                f"📄 {fname}",
+                f"📁 大小: {format_file_size(fsize)}  |  📅 {mtime.strftime('%Y-%m-%d %H:%M')}",
+                "",
+                "━" * 30,
+                "",
+                excerpt,
+            ]
+            return "\n".join(lines)
+        except Exception as e:
+            return f"\u274C 预览失败: {e}"
+
+    def _show_preview_with_highlight(self, text: str, keyword: str) -> None:
+        if not self.preview_text:
+            return
+        self.preview_text.config(state="normal")
+        self.preview_text.delete("1.0", tk.END)
+        self.preview_text.insert("1.0", text)
+        if keyword:
+            self._apply_highlight(keyword)
+        self.preview_text.config(state="disabled")
+
+    def _apply_highlight(self, keyword: str) -> None:
+        if not self.preview_text or not keyword:
+            return
+        start = "1.0"
+        kw_lower = keyword.lower()
+        while True:
+            pos = self.preview_text.search(kw_lower, start, tk.END, nocase=True)
+            if not pos:
+                break
+            end = f"{pos}+{len(keyword)}c"
+            try:
+                self.preview_text.tag_add("highlight", pos, end)
+            except Exception:
+                pass
+            start = end
+
+    def _show_preview_text(self, text: str) -> None:
+        if not self.preview_text:
+            return
+        self.preview_text.config(state="normal")
+        self.preview_text.delete("1.0", tk.END)
+        self.preview_text.insert("1.0", text)
+        self.preview_text.config(state="disabled")
 
     def clear_results(self) -> None:
         if self.result_listbox:
@@ -495,11 +859,7 @@ class SearchPanel:
             self.detail_label.config(text="")
         if self.open_btn:
             self.open_btn.config(state="disabled", bg=COLORS["border"])
-        if self.suggestion_text:
-            self.suggestion_text.config(
-                text="\U0001F4A1 输入关键词开始搜索\n\n支持搜索所有文件类型：\n• Word/Excel 文档\n• PDF 文件\n• 图片文件",
-                fg=COLORS["text_light"],
-            )
+        self._show_default_preview()
 
     def get_current_results(self) -> list[dict]:
         return self._search_results
@@ -509,7 +869,6 @@ class SearchPanel:
             return
         selection = self.result_listbox.curselection()
         if selection:
-            from datetime import datetime
             result = self._search_results[selection[0]]
             if not result.get("detail_loaded"):
                 try:
@@ -529,6 +888,9 @@ class SearchPanel:
                          f"\U0001F4C5 日期: {result['date']}",
                     fg=COLORS["text"],
                 )
+            # 显示文件预览
+            keyword = self.search_var.get().strip()
+            self._show_file_preview(result["filepath"], keyword)
 
     def _show_ctx_menu(self, event: tk.Event) -> None:
         if not self.result_listbox:
