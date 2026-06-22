@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import tkinter as tk
+from datetime import datetime
 from tkinter import ttk
 
 from constants import COLORS, AI_CONFIGS
@@ -27,6 +28,7 @@ class WebPanel:
         self._answer_cancelled: bool = False
         self._stream_buffer: str = ""
         self._attached_doc: dict | None = None
+        self._last_answer_text: str = ""
 
         self._chat_widget: tk.Text | None = None
         self._thinking_id: int | None = None
@@ -773,6 +775,7 @@ class WebPanel:
                 pass
             self._thinking_id = None
 
+        answer_end_pos = None
         if not self._first_chunk:
             try:
                 self._chat_widget.config(state="normal")
@@ -780,6 +783,7 @@ class WebPanel:
                     clean = self._format_text(text)
                     self._chat_widget.delete(self._ai_start_pos, "end-1c")
                     self._chat_widget.insert(self._ai_start_pos, clean + "\n", "ai")
+                    answer_end_pos = self._chat_widget.index("end-1c")
                 self._chat_widget.config(state="disabled")
             except Exception:
                 pass
@@ -789,9 +793,16 @@ class WebPanel:
                 clean = self._format_text(text)
                 self._chat_widget.insert("end", "知识库+：\n", "ai_name")
                 self._chat_widget.insert("end", clean + "\n", "ai")
+                answer_end_pos = self._chat_widget.index("end-1c")
                 self._chat_widget.config(state="disabled")
             except Exception:
                 pass
+
+        # 保存回答文本并添加导出按钮
+        if text and "[错误]" not in text:
+            self._last_answer_text = self._format_text(text)
+            if answer_end_pos:
+                self._add_export_buttons(answer_end_pos)
 
         if text and "[错误]" not in text and self._active_conv_id:
             conv = self._conversations.get(self._active_conv_id)
@@ -802,3 +813,78 @@ class WebPanel:
                 conv["history"].append({"role": "assistant", "content": clean[:2000]})
                 if len(conv["history"]) > 12:
                     conv["history"] = conv["history"][2:]
+
+    def _add_export_buttons(self, insert_pos: str) -> None:
+        """在指定位置后插入导出按钮行"""
+        try:
+            self._chat_widget.config(state="normal")
+            btn_frame = tk.Frame(self._chat_widget, bg="#F8FAFC")
+
+            btn_font = ("Microsoft YaHei UI", 9)
+            btn_configs = [
+                ("Word", "docx", "#2563EB"),
+                ("PDF", "pdf", "#DC2626"),
+                ("PPT", "pptx", "#EA580C"),
+                ("Excel", "xlsx", "#16A34A"),
+            ]
+            for label, fmt, color in btn_configs:
+                b = tk.Button(
+                    btn_frame, text=f"\u29C9 {label}",
+                    font=btn_font, bg=color, fg="white",
+                    bd=0, relief="flat", cursor="hand2",
+                    padx=10, pady=3,
+                    activebackground=color,
+                    command=lambda f=fmt: self._on_export(f),
+                )
+                b.pack(side=tk.LEFT, padx=3)
+
+            self._chat_widget.insert(insert_pos, "\n")
+            self._chat_widget.window_create(insert_pos + "+1c", window=btn_frame)
+            self._chat_widget.insert(insert_pos + "+1c", "\n")
+            self._chat_widget.config(state="disabled")
+            self._chat_widget.see("end")
+        except Exception:
+            pass
+
+    def _on_export(self, fmt: str) -> None:
+        """导出按钮点击处理"""
+        if not self._last_answer_text:
+            return
+        answer = self._last_answer_text
+        title = f"AI分析报告_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self._do_export(answer, fmt, title)
+
+    def _do_export(self, text: str, fmt: str, title: str) -> None:
+        """后台线程执行文档导出"""
+        import threading
+
+        def run():
+            try:
+                from services.document_generator import DocumentGenerator, ExportOptions
+                import tempfile, os, tkinter.messagebox as msgbox
+
+                suffix = "." + fmt
+                tmp = tempfile.gettempdir()
+                out_path = os.path.join(tmp, title + suffix)
+
+                opts = ExportOptions(
+                    format=fmt,
+                    output_path=out_path,
+                    title=title,
+                    author="AI知识库4.0",
+                )
+                gen = DocumentGenerator()
+                result = gen.generate(text, opts)
+                file_size = os.path.getsize(result)
+                if file_size > 0:
+                    self._parent.after(0, lambda: msgbox.showinfo(
+                        "导出成功", f"文件已保存至：\n{result}"))
+                else:
+                    self._parent.after(0, lambda: msgbox.showerror(
+                        "导出失败", "生成文件为空"))
+            except Exception as e:
+                self._parent.after(0, lambda: msgbox.showerror(
+                    "导出失败", str(e)))
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
