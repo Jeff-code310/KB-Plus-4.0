@@ -27,24 +27,28 @@ AI_CONFIGS = {
         "name": "本地Ollama",
         "api_url": "http://localhost:11434/api/chat",
         "model": "qwen2.5:3b",
+        "max_context_tokens": 8192,
     },
     "deepseek_api": {
         "name": "DeepSeek API",
         "api_url": "https://api.deepseek.com/v1/chat/completions",
         "model": "deepseek-chat",
         "need_key": True,
+        "max_context_tokens": 131072,
     },
     "zhipu_cloud": {
         "name": "智谱云端",
         "api_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
         "model": "glm-4-flash",
         "need_key": True,
+        "max_context_tokens": 131072,
     },
     "sensenova": {
         "name": "SenseNova (商汤)",
         "api_url": "https://token.sensenova.cn/v1/chat/completions",
         "model": "SenseChat-5",
         "need_key": True,
+        "max_context_tokens": 32768,
     },
 }
 

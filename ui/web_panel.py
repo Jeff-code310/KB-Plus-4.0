@@ -1,3 +1,4 @@
+import os
 import re
 import threading
 import tkinter as tk
@@ -25,6 +26,7 @@ class WebPanel:
         self._is_answering: bool = False
         self._answer_cancelled: bool = False
         self._stream_buffer: str = ""
+        self._attached_doc: dict | None = None
 
         self._chat_widget: tk.Text | None = None
         self._thinking_id: int | None = None
@@ -339,12 +341,23 @@ class WebPanel:
             highlightbackground="#CBD5E1",
             highlightcolor=COLORS["primary"],
         )
-        self.web_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12), ipady=7)
+        self.web_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), ipady=7)
         self.web_entry.insert(0, "向 AI 提问...")
         self.web_entry.config(fg="#94A3B8")
         self.web_entry.bind("<Return>", lambda e: self._on_send_click())
         self.web_entry.bind("<FocusIn>", self._on_entry_focus)
         self.web_entry.bind("<FocusOut>", self._on_entry_blur)
+
+        self.upload_btn = tk.Button(
+            inner, text="\U0001F4CE",
+            font=("Segoe UI Emoji", 14),
+            bg="white", fg="#64748B",
+            bd=0, relief="flat", cursor="hand2",
+            activebackground="#F0F4F8",
+            activeforeground=COLORS["primary"],
+            command=self._on_upload_file,
+        )
+        self.upload_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.send_btn = tk.Button(
             inner, text="\u25B6 发送",
@@ -368,6 +381,93 @@ class WebPanel:
         if not self.web_var.get():
             self.web_entry.insert(0, "向 AI 提问...")
             self.web_entry.config(fg="#94A3B8")
+
+    # ── File upload ────────────────────────────────────
+
+    def _on_upload_file(self) -> None:
+        from tkinter import filedialog
+        from services.document_parser import parse_document
+
+        filetypes = [
+            ("所有支持格式", "*.docx;*.pdf;*.xlsx;*.xls;*.pptx;*.txt;*.md"),
+            ("Word文档", "*.docx;*.doc"),
+            ("PDF文档", "*.pdf"),
+            ("Excel表格", "*.xlsx;*.xls"),
+            ("PPT演示", "*.pptx;*.ppt"),
+            ("纯文本", "*.txt;*.md"),
+        ]
+        filepath = filedialog.askopenfilename(title="选择要分析的文档", filetypes=filetypes)
+        if not filepath:
+            return
+
+        self._show_parsing_hint(os.path.basename(filepath))
+
+        def _parse_thread():
+            try:
+                from services.document_parser import parse_document
+                parsed = parse_document(filepath)
+                self._parent.after(0, lambda: self._on_parse_complete(parsed, filepath))
+            except Exception as e:
+                self._parent.after(0, lambda: self._show_parse_error(str(e)))
+
+        threading.Thread(target=_parse_thread, daemon=True).start()
+
+    def _show_parsing_hint(self, filename: str) -> None:
+        self._chat_widget.config(state="normal")
+        if self._welcome_shown:
+            self._chat_widget.delete("1.0", self._welcome_end)
+            self._welcome_shown = False
+        self._chat_widget.insert("end", "\n— — —\n", "sep")
+        self._chat_widget.insert("end", f"\U0001F4CE {filename}\n", "user_label")
+        self._chat_widget.insert("end", "正在解析文件...\n", "loading")
+        self._chat_widget.config(state="disabled")
+        self._chat_widget.see("end")
+
+    def _show_parse_error(self, error: str) -> None:
+        self._chat_widget.config(state="normal")
+        self._chat_widget.insert("end", f"\U0000274C 文件解析失败: {error}\n", "loading")
+        self._chat_widget.config(state="disabled")
+        self._chat_widget.see("end")
+
+    def _on_parse_complete(self, parsed, filepath: str) -> None:
+        self._chat_widget.config(state="normal")
+
+        doc_meta = {
+            "filename": parsed.filename,
+            "filepath": filepath,
+            "file_type": parsed.file_type,
+            "text_content": parsed.text_content,
+            "structured_content": parsed.structured_content,
+            "summary": parsed.summary,
+            "metadata": dict(parsed.metadata) if hasattr(parsed, "metadata") else {},
+        }
+        self._attached_doc = doc_meta
+
+        conv = self._conversations.get(self._active_conv_id) if self._active_conv_id else None
+        if conv:
+            conv["attached_doc"] = doc_meta
+
+        self._chat_widget.delete("end-2l", "end-1c")
+        self._chat_widget.insert("end", "\U0001F4CE  ", "user_label")
+
+        file_size = doc_meta["metadata"].get("file_size", 0)
+        size_str = f"{file_size / 1024:.1f} KB" if file_size < 1048576 else f"{file_size / 1048576:.1f} MB"
+
+        info_lines = [
+            f"\U0001F4C4 {parsed.filename}",
+            f"类型: {parsed.file_type.upper()}  |  大小: {size_str}",
+            parsed.summary,
+        ]
+        for line in info_lines:
+            self._chat_widget.insert("end", line + "\n", "user")
+        self._chat_widget.insert("end", "\n", "user")
+
+        self._chat_widget.config(state="disabled")
+        self._chat_widget.see("end")
+
+        self.web_entry.delete(0, tk.END)
+        self.web_entry.insert(0, "请分析这份文档")
+        self.web_entry.config(fg=COLORS["text"])
 
     def _on_mousewheel(self, event: tk.Event) -> None:
         self._chat_widget.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -402,8 +502,10 @@ class WebPanel:
             "title": "新对话",
             "messages": [],
             "history": [],
+            "attached_doc": None,
         }
         self._active_conv_id = conv_id
+        self._attached_doc = None
         self._sync_listbox()
         self._chat_widget.config(state="normal")
         self._chat_widget.delete("1.0", "end")
@@ -453,6 +555,8 @@ class WebPanel:
         conv = self._conversations.get(conv_id)
         if conv is None:
             return
+
+        self._attached_doc = conv.get("attached_doc")
 
         self._chat_widget.config(state="normal")
         self._chat_widget.delete("1.0", "end")
@@ -546,6 +650,13 @@ class WebPanel:
             pass
         self._thinking_id = self._parent.after(300, self._animate_thinking)
 
+    def _truncate_for_model(self, content: str, provider: str) -> str:
+        max_tokens = AI_CONFIGS.get(provider, {}).get("max_context_tokens", 4096)
+        max_chars = int(max_tokens * 1.5 * 0.8)
+        if len(content) > max_chars:
+            return content[:max_chars] + f"\n\n...（内容已截断，原文约 {len(content)} 字符）"
+        return content
+
     def _get_provider_config(self) -> dict:
         provider = self._provider
         base = dict(AI_CONFIGS.get(provider, {}))
@@ -565,6 +676,16 @@ class WebPanel:
         if conv and conv.get("history"):
             history = conv["history"].copy()
 
+        # 注入附件文档内容
+        doc_content = ""
+        if self._attached_doc and self._attached_doc.get("structured_content"):
+            doc_content = self._truncate_for_model(
+                self._attached_doc["structured_content"], provider
+            )
+            if "【上传文档】" not in question:
+                fname = self._attached_doc.get("filename", "文档")
+                question = f"【上传文档：{fname}】\n{question}"
+
         def stream_cb(text: str) -> None:
             if self._answer_cancelled:
                 return
@@ -575,7 +696,7 @@ class WebPanel:
         try:
             if provider == "ollama":
                 result = call_ollama(
-                    question, "", "",
+                    question, doc_content, "",
                     stream_callback=stream_cb,
                     cancelled_flag=cancelled,
                     history=history,
@@ -584,7 +705,7 @@ class WebPanel:
             elif provider == "zhipu_cloud":
                 key = custom.get("api_key", "") or self._api_key
                 result = call_zhipu_websearch(
-                    question, "", "", key,
+                    question, doc_content, "", key,
                     stream_callback=stream_cb,
                     cancelled_flag=cancelled,
                     history=history,
@@ -593,7 +714,7 @@ class WebPanel:
             elif provider in ("deepseek_api", "sensenova"):
                 key = custom.get("api_key", "") or self._api_key
                 result = call_openai_compat(
-                    provider, question, "", "",
+                    provider, question, doc_content, "",
                     api_key=key,
                     stream_callback=stream_cb,
                     cancelled_flag=cancelled,
