@@ -51,14 +51,14 @@ AI_CONFIGS = {
 TEXT_CONTENT_EXTENSIONS = frozenset({
     ".txt", ".md", ".csv", ".py", ".json", ".xml", ".ini", ".cfg", ".log",
     ".html", ".htm", ".css", ".js", ".yaml", ".yml", ".toml", ".conf",
-    ".docx", ".pdf",
+    ".docx", ".pdf", ".xlsx", ".xls", ".pptx",
 })
 
 BINARY_EXTENSIONS = frozenset({
     ".exe", ".dll", ".so", ".dylib", ".png", ".jpg", ".jpeg", ".gif", ".bmp",
     ".ico", ".zip", ".rar", ".7z", ".tar", ".gz", ".mp3", ".mp4", ".avi",
-    ".mkv", ".pyc", ".pyd", ".woff", ".woff2", ".ttf", ".eot", ".pdf",
-    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".mkv", ".pyc", ".pyd", ".woff", ".woff2", ".ttf", ".eot",
+    ".doc", ".ppt",
 })
 
 FILE_ICONS = {

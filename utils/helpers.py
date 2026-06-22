@@ -18,7 +18,7 @@ def get_file_icon(filename: str) -> str:
 
 def is_text_file(filepath: str) -> bool:
     ext = os.path.splitext(filepath)[1].lower()
-    if ext in (".docx", ".pdf"):
+    if ext in (".docx", ".pdf", ".xlsx", ".xls", ".pptx"):
         return True
     return ext not in BINARY_EXTENSIONS
 
@@ -54,6 +54,13 @@ def read_file_chunk(filepath: str, max_bytes: int = 65536) -> str | None:
         return _read_docx_text(filepath, max_bytes)
     if ext == ".pdf":
         return _read_pdf_text(filepath, max_bytes)
+    if ext in (".xlsx", ".xls", ".pptx"):
+        from services.document_parser import parse_document
+        try:
+            doc = parse_document(filepath)
+            return doc.text_content[:max_bytes]
+        except Exception:
+            return None
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             return f.read(max_bytes)
